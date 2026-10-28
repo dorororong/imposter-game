@@ -19,10 +19,11 @@ const MODES = {
 };
 const TIMERS = [0, 60, 120, 180, 300, 420];
 const MIN_P = 3, MAX_P = 15;
-const CUSTOM = '직접 입력';
-const DEFAULTS = { players: 5, names: [], mode: 'normal', liars: 1, cats: [], showCat: true, timer: 180, vote: 'point', custom: '' };
+const CATS = window.WORDS;
+const DEFAULTS = { players: 5, names: [], mode: 'normal', liars: 1, cats: [], showCat: true, timer: 180, vote: 'point' };
 
 let settings = { ...DEFAULTS, ...store.get('liar.settings', {}) };
+delete settings.custom; // 예전 버전의 직접 입력 제시어
 let scores = store.get('liar.scores', {});
 const used = new Set();
 let round = null;
@@ -39,7 +40,7 @@ function normalize() {
   if (s.mode === 'spy' && s.players < 5) s.mode = 'normal';
   if (s.liars === 2 && s.players < (s.mode === 'spy' ? 7 : 6)) s.liars = 1;
   if (!TIMERS.includes(s.timer)) s.timer = 180;
-  s.cats = s.cats.filter((c) => allCats().some((x) => x.name === c));
+  s.cats = s.cats.filter((c) => CATS.some((x) => x.name === c));
 }
 
 function playerNames() {
@@ -51,22 +52,8 @@ function playerNames() {
   });
 }
 
-function parseCustom(text) {
-  return text.split('\n')
-    .map((l) => l.split(/[\/,]/).map((w) => w.trim()).filter(Boolean).slice(0, 2))
-    .filter((p) => p.length);
-}
-
-function allCats() {
-  const cats = [...window.WORDS];
-  const custom = parseCustom(settings.custom || '');
-  if (custom.length) cats.push({ name: CUSTOM, emoji: '✏️', pairs: custom });
-  return cats;
-}
-
 function activeCats() {
-  const all = allCats();
-  return settings.cats.length ? all.filter((c) => settings.cats.includes(c.name)) : all.filter((c) => c.name !== CUSTOM);
+  return settings.cats.length ? CATS.filter((c) => settings.cats.includes(c.name)) : CATS;
 }
 
 function pickWord() {
@@ -76,12 +63,7 @@ function pickWord() {
   if (!avail.length) { for (const x of pool) used.delete(x.cat + '|' + x.pair.join('|')); avail = pool; }
   const x = avail[rand(avail.length)];
   used.add(x.cat + '|' + x.pair.join('|'));
-  let [word, decoy] = x.pair.length === 2 && rand(2) ? [x.pair[1], x.pair[0]] : x.pair;
-  if (!decoy) {
-    // 단어 하나만 적은 직접 입력: 같은 카테고리의 다른 단어를 바보 모드용으로 빌린다
-    const others = pool.filter((y) => y.cat === x.cat && y.pair[0] !== word).map((y) => y.pair[0]);
-    decoy = others.length ? others[rand(others.length)] : '???';
-  }
+  const [word, decoy] = rand(2) ? [x.pair[1], x.pair[0]] : x.pair;
   return { cat: x.cat, word, decoy };
 }
 
@@ -269,14 +251,6 @@ const VIEWS = {
         <details ${ui.namesOpen ? 'open' : ''} data-details="namesOpen">
           <summary>참가자 이름 <span class="section-note" style="margin-left:auto;margin-right:8px">선택</span></summary>
           <div class="names">${names}</div>
-        </details>
-      </div>
-
-      <div class="section">
-        <details ${ui.customOpen ? 'open' : ''} data-details="customOpen">
-          <summary>직접 만든 제시어 <span class="section-note" style="margin-left:auto;margin-right:8px">${parseCustom(s.custom).length ? `${parseCustom(s.custom).length}쌍` : '선택'}</span></summary>
-          <textarea data-custom placeholder="한 줄에 하나씩, 시민 단어 / 라이어 단어&#10;예) 아메리카노 / 카페라떼&#10;예) 우리 담임쌤 / 옆반 담임쌤">${esc(s.custom)}</textarea>
-          <p class="hint">입력하면 주제에 ‘✏️ ${CUSTOM}’가 생겨요. 이 기기에만 저장돼요.</p>
         </details>
       </div>
 
@@ -501,11 +475,11 @@ const VIEWS = {
 function chipsHtml() {
   const s = settings;
   return `<button class="chip" data-act="cat" data-arg="" ${pressed(!s.cats.length)}>🎲 전체</button>
-    ${allCats().map((c) => `<button class="chip" data-act="cat" data-arg="${esc(c.name)}" ${pressed(s.cats.includes(c.name))}>${c.emoji} ${esc(c.name)}<span class="n">${c.pairs.length}</span></button>`).join('')}`;
+    ${CATS.map((c) => `<button class="chip" data-act="cat" data-arg="${esc(c.name)}" ${pressed(s.cats.includes(c.name))}>${c.emoji} ${esc(c.name)}<span class="n">${c.pairs.length}</span></button>`).join('')}`;
 }
 
 function catLabel(name) {
-  const c = allCats().find((x) => x.name === name);
+  const c = CATS.find((x) => x.name === name);
   return c ? `${c.emoji} ${c.name}` : name;
 }
 
@@ -614,7 +588,6 @@ const ACTIONS = {
   timer: (a) => { settings.timer = +a; saveSettings(); render(); },
   vote: (a) => { settings.vote = a; saveSettings(); render(); },
   start: () => {
-    if (screen === 'setup' && !activeCats().some((c) => c.pairs.length)) { alert('제시어가 있는 주제를 하나 이상 골라주세요.'); return; }
     startRound();
   },
   flip: () => {
@@ -689,17 +662,7 @@ $app.addEventListener('input', (e) => {
   if (t.dataset.name != null) {
     settings.names[+t.dataset.name] = t.value;
     saveSettings();
-  } else if (t.hasAttribute('data-custom')) {
-    settings.custom = t.value;
-    saveSettings();
   }
-});
-// 직접 입력 제시어가 바뀌면 주제 칩만 다시 그린다 (전체를 다시 그리면 이어지는 탭이 사라진다)
-$app.addEventListener('change', (e) => {
-  if (!e.target.hasAttribute('data-custom')) return;
-  normalize(); saveSettings();
-  const chips = document.getElementById('chips');
-  if (chips) chips.innerHTML = chipsHtml();
 });
 $app.addEventListener('toggle', (e) => {
   const d = e.target.dataset?.details;

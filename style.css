@@ -172,12 +172,11 @@ summary::-webkit-details-marker { display: none; }
 summary::after { content: "＋"; color: var(--muted); font-weight: 400; }
 details[open] summary::after { content: "－"; }
 .names { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px; }
-.input, textarea {
+.input {
   width: 100%; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius-sm);
   padding: 10px 12px; font-size: 16px; outline: none;
 }
-.input:focus, textarea:focus { border-color: var(--text); background: var(--bg); }
-textarea { min-height: 140px; resize: vertical; margin-top: 12px; line-height: 1.6; }
+.input:focus { border-color: var(--text); background: var(--bg); }
 
 /* ---------- reveal card ---------- */
 .progress { display: flex; gap: 4px; justify-content: center; margin: 4px 0 20px; flex-wrap: wrap; }
