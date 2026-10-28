@@ -16,11 +16,17 @@ const MODES = {
   normal: { name: '노말', desc: '라이어는 자신이 라이어인 걸 알고, 제시어 없이 주제만 보고 시작해요.' },
   fool: { name: '바보', desc: '라이어는 자기가 라이어인 줄 몰라요. 비슷하지만 다른 단어를 받아요.' },
   spy: { name: '스파이', desc: '제시어와 라이어를 아는 스파이가 시민인 척 라이어를 도와요. (5명 이상)' },
+  draw: { name: '그리기', desc: '말 대신 그림으로! 폰을 돌려가며 한 사람씩 한 획만 이어 그려요. 라이어는 주제만 알아요.' },
 };
 const TIMERS = [0, 60, 120, 180, 300, 420];
+const LAPS = [1, 2, 3];
 const MIN_P = 3, MAX_P = 15;
 const CATS = window.WORDS;
-const DEFAULTS = { players: 5, names: [], mode: 'normal', liars: 1, cats: [], showCat: true, timer: 180, vote: 'point' };
+const DRAW_CATS = window.DRAW_WORDS;
+// 그리기 모드에서 누가 어느 획을 그렸는지 구분하는 플레이어별 색 (흰 바탕 기준)
+const COLORS = ['#222222', '#e5484d', '#2f6fde', '#1f9d55', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4',
+  '#84cc16', '#f97316', '#0f766e', '#a16207', '#6366f1', '#be123c', '#64748b'];
+const DEFAULTS = { players: 5, names: [], mode: 'normal', liars: 1, cats: [], drawCats: [], showCat: true, timer: 180, laps: 2, vote: 'point' };
 
 let settings = { ...DEFAULTS, ...store.get('liar.settings', {}) };
 delete settings.custom; // 예전 버전의 직접 입력 제시어
@@ -40,7 +46,9 @@ function normalize() {
   if (s.mode === 'spy' && s.players < 5) s.mode = 'normal';
   if (s.liars === 2 && s.players < (s.mode === 'spy' ? 7 : 6)) s.liars = 1;
   if (!TIMERS.includes(s.timer)) s.timer = 180;
+  if (!LAPS.includes(s.laps)) s.laps = 2;
   s.cats = s.cats.filter((c) => CATS.some((x) => x.name === c));
+  s.drawCats = s.drawCats.filter((c) => DRAW_CATS.some((x) => x.name === c));
 }
 
 function playerNames() {
@@ -52,18 +60,23 @@ function playerNames() {
   });
 }
 
+// 그리기 모드는 그리기 쉬운 단어만 모은 별도 목록과 별도 주제 선택을 쓴다
+const catList = (mode = settings.mode) => (mode === 'draw' ? DRAW_CATS : CATS);
+const catKey = () => (settings.mode === 'draw' ? 'drawCats' : 'cats');
+
 function activeCats() {
-  return settings.cats.length ? CATS.filter((c) => settings.cats.includes(c.name)) : CATS;
+  const picked = settings[catKey()];
+  return picked.length ? catList().filter((c) => picked.includes(c.name)) : catList();
 }
 
 function pickWord() {
   const pool = [];
-  for (const c of activeCats()) for (const p of c.pairs) pool.push({ cat: c.name, pair: p });
+  for (const c of activeCats()) for (const p of c.pairs || c.words.map((w) => [w])) pool.push({ cat: c.name, pair: p });
   let avail = pool.filter((x) => !used.has(x.cat + '|' + x.pair.join('|')));
   if (!avail.length) { for (const x of pool) used.delete(x.cat + '|' + x.pair.join('|')); avail = pool; }
   const x = avail[rand(avail.length)];
   used.add(x.cat + '|' + x.pair.join('|'));
-  const [word, decoy] = rand(2) ? [x.pair[1], x.pair[0]] : x.pair;
+  const [word, decoy] = x.pair.length > 1 && rand(2) ? [x.pair[1], x.pair[0]] : x.pair;
   return { cat: x.cat, word, decoy };
 }
 
@@ -81,6 +94,7 @@ function startRound() {
     mode: settings.mode, showCat: settings.showCat,
     step: 0, first: rand(n), dir: rand(2) ? '시계 방향' : '반시계 방향',
     tie: 0, candidates: [...Array(n).keys()], ballots: [], voter: 0, accused: null,
+    laps: settings.laps, turn: 0, strokes: [],
   };
   requestWake();
   go('reveal');
@@ -103,7 +117,7 @@ function finish(type) {
 }
 
 /* ================= 화면 전환 ================= */
-const IN_GAME = ['reveal', 'discuss', 'vote', 'secret', 'tally', 'accuse'];
+const IN_GAME = ['reveal', 'discuss', 'draw', 'vote', 'secret', 'tally', 'accuse'];
 
 function go(next, keepUi) {
   clearInterval(timerId); timerId = null;
@@ -117,6 +131,8 @@ function go(next, keepUi) {
 function render() {
   $app.innerHTML = VIEWS[screen]();
   if (screen === 'discuss') tickTimer();
+  paintDrawings();
+  if (screen === 'draw') bindBoard();
 }
 
 const topbar = (title, left = 'back', right = '') => `
@@ -175,6 +191,12 @@ const VIEWS = {
       <h3>모드</h3>
       ${Object.values(MODES).map((m) => `<div class="mode-card"><b>${m.name}</b>${m.desc}</div>`).join('')}
       <p class="muted" style="font-size:14px;margin-top:10px">라이어 2명은 6명 이상(스파이 모드는 7명 이상)일 때 고를 수 있어요.</p>
+      <h3>그리기 모드</h3>
+      <ul>
+        <li>제시어 확인은 똑같아요. 라이어는 단어 없이 주제만 알아요.</li>
+        <li>설명 대신 폰을 돌려가며 한 사람씩 <b>한 획</b>만 이어서 그려요. 사람마다 색이 달라서 누가 어떤 획을 그렸는지 보여요.</li>
+        <li>정한 바퀴만큼 다 그리면 완성된 그림을 보며 투표해요. 잡힌 라이어는 그림을 보고 제시어를 맞혀요.</li>
+      </ul>
       <h3>점수</h3>
       <table class="pts">
         <tr><td>시민 승리 — 시민 각자</td><td>+1</td></tr>
@@ -222,7 +244,7 @@ const VIEWS = {
 
       <div class="section">
         <div class="section-head"><h3 class="section-title">주제</h3>
-          <span class="section-note">${s.cats.length ? `${s.cats.length}개 선택` : '전체에서 무작위'}</span></div>
+          <span class="section-note">${s[catKey()].length ? `${s[catKey()].length}개 선택` : '전체에서 무작위'}</span></div>
         <div class="chips" id="chips">${chipsHtml()}</div>
       </div>
 
@@ -233,10 +255,16 @@ const VIEWS = {
         </div>
       </div>
 
+      ${s.mode === 'draw' ? `
+      <div class="section">
+        <div class="section-head"><h3 class="section-title">그리기 바퀴</h3>
+          <span class="section-note">한 사람당 ${s.laps}획</span></div>
+        <div class="seg">${LAPS.map((l) => `<button data-act="laps" data-arg="${l}" ${pressed(s.laps === l)}>${l}바퀴</button>`).join('')}</div>
+      </div>` : `
       <div class="section">
         <div class="section-head"><h3 class="section-title">설명 시간</h3></div>
         <div class="seg">${TIMERS.map((t) => `<button data-act="timer" data-arg="${t}" ${pressed(s.timer === t)}>${t ? `${t / 60}분` : '없음'}</button>`).join('')}</div>
-      </div>
+      </div>`}
 
       <div class="section">
         <div class="section-head"><h3 class="section-title">투표 방식</h3></div>
@@ -280,7 +308,7 @@ const VIEWS = {
       </button>
       <div class="grow"></div>
       <div class="sticky-actions">
-        <button class="btn primary" data-act="next-reveal" ${shown ? '' : 'disabled'}>${last ? '모두 확인 완료 · 설명 시작' : '확인했어요 · 다음 사람에게'}</button>
+        <button class="btn primary" data-act="next-reveal" ${shown ? '' : 'disabled'}>${last ? `모두 확인 완료 · ${r.mode === 'draw' ? '그리기' : '설명'} 시작` : '확인했어요 · 다음 사람에게'}</button>
       </div>
     </section>`;
   },
@@ -318,6 +346,30 @@ const VIEWS = {
     </section>`;
   },
 
+  draw: () => {
+    const r = round;
+    const total = r.names.length * r.laps;
+    const p = drawer(r.turn);
+    const last = r.turn === total - 1;
+    return `
+    ${topbar('그리기', 'exit', `<span class="section-note">${r.turn + 1}/${total}</span>`)}
+    <section class="screen">
+      <div class="drawer">
+        <span class="dot" style="background:${colorOf(p)}"></span>
+        <div><p class="drawer-name">${esc(r.names[p])} 차례</p>
+          <p class="drawer-sub">${ui.drawn ? '다 그렸으면 다음 사람에게 넘기세요' : '손을 떼지 말고 <b>한 획</b>만 그려요'}</p></div>
+        ${r.showCat ? `<span class="cat-pill">${esc(catLabel(r.cat))}</span>` : ''}
+      </div>
+      <canvas class="board" id="board" data-drawing aria-label="다 같이 그리는 그림"></canvas>
+      <div class="legend">${legendHtml()}</div>
+      <div class="grow"></div>
+      <div class="sticky-actions">
+        <button class="btn primary" data-act="draw-next" ${ui.drawn ? '' : 'disabled'}>${last ? '다 그렸어요 · 투표하기' : `${esc(r.names[drawer(r.turn + 1)])}에게 넘기기`}</button>
+        <button class="btn ghost" data-act="draw-undo" ${ui.drawn ? '' : 'disabled'}>방금 그린 획 지우기</button>
+      </div>
+    </section>`;
+  },
+
   vote: () => {
     const r = round;
     return `
@@ -325,6 +377,7 @@ const VIEWS = {
     <section class="screen">
       <p class="lead">${r.tie ? '동점자 중에서 다시 지목!' : '하나, 둘, 셋!'}</p>
       <p class="sub">${r.tie ? '동점자만 후보로, 모두 다시 동시에 가리키세요.' : '다 같이 라이어라고 생각하는 사람을 동시에 가리키세요.'}<br>가장 많이 지목된 사람을 고르세요.</p>
+      ${r.mode === 'draw' ? drawingHtml() : ''}
       <div class="pick">${r.names.map((nm, i) => `<button data-act="sel" data-arg="${i}" ${pressed(ui.sel === i)}>${esc(nm)}</button>`).join('')}</div>
       <div class="grow"></div>
       <div class="sticky-actions">
@@ -355,6 +408,7 @@ const VIEWS = {
     <section class="screen">
       <p class="lead">${esc(r.names[v])}님, 누가 라이어 같나요?</p>
       <p class="sub">고른 뒤 확정하면 화면이 가려져요.</p>
+      ${r.mode === 'draw' ? drawingHtml() : ''}
       <div class="pick">${cands.map((i) => `<button data-act="sel" data-arg="${i}" ${pressed(ui.sel === i)}>${esc(r.names[i])}</button>`).join('')}</div>
       <div class="grow"></div>
       <div class="sticky-actions">
@@ -451,6 +505,7 @@ const VIEWS = {
         <div class="row"><span class="k">라이어</span><span class="v">${liarNames}</span></div>
         ${r.spy != null ? `<div class="row"><span class="k">스파이</span><span class="v">${esc(r.names[r.spy])}</span></div>` : ''}
       </div>
+      ${r.mode === 'draw' ? `<div style="margin-top:16px">${drawingHtml()}</div>` : ''}
       <div class="board">
         <h3>누적 점수 <button class="btn small ghost" data-act="reset-scores" style="min-height:32px">초기화</button></h3>
         ${board.map((nm, k) => {
@@ -473,14 +528,83 @@ const VIEWS = {
 };
 
 function chipsHtml() {
-  const s = settings;
-  return `<button class="chip" data-act="cat" data-arg="" ${pressed(!s.cats.length)}>🎲 전체</button>
-    ${CATS.map((c) => `<button class="chip" data-act="cat" data-arg="${esc(c.name)}" ${pressed(s.cats.includes(c.name))}>${c.emoji} ${esc(c.name)}<span class="n">${c.pairs.length}</span></button>`).join('')}`;
+  const picked = settings[catKey()];
+  return `<button class="chip" data-act="cat" data-arg="" ${pressed(!picked.length)}>🎲 전체</button>
+    ${catList().map((c) => `<button class="chip" data-act="cat" data-arg="${esc(c.name)}" ${pressed(picked.includes(c.name))}>${c.emoji} ${esc(c.name)}<span class="n">${(c.pairs || c.words).length}</span></button>`).join('')}`;
 }
 
 function catLabel(name) {
-  const c = CATS.find((x) => x.name === name);
+  const c = catList(round?.mode).find((x) => x.name === name);
   return c ? `${c.emoji} ${c.name}` : name;
+}
+
+/* ================= 그리기 ================= */
+const drawer = (turn) => (round.first + turn) % round.names.length;
+const colorOf = (p) => COLORS[p % COLORS.length];
+
+function legendHtml() {
+  return round.names.map((_, k) => drawer(k))
+    .map((p) => `<span class="lg"><i style="background:${colorOf(p)}"></i>${esc(round.names[p])}</span>`).join('');
+}
+
+const drawingHtml = () => `<div class="drawing"><canvas class="board thumb" data-drawing aria-label="완성된 그림"></canvas>
+  <div class="legend">${legendHtml()}</div></div>`;
+
+// 좌표는 0~1로 저장해 화면 크기가 달라져도 같은 그림이 나온다
+function paintCanvas(cv, strokes) {
+  const w = cv.clientWidth;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cv.height = Math.round(w * dpr);
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(3, w * 0.014);
+  for (const s of strokes) {
+    ctx.strokeStyle = colorOf(s.p);
+    ctx.beginPath();
+    s.pts.forEach(([x, y], k) => (k ? ctx.lineTo(x * w, y * w) : ctx.moveTo(x * w, y * w)));
+    if (s.pts.length === 1) ctx.lineTo(s.pts[0][0] * w + 0.1, s.pts[0][1] * w);
+    ctx.stroke();
+  }
+  return { ctx, w };
+}
+
+function paintDrawings() {
+  if (!round) return;
+  for (const cv of $app.querySelectorAll('canvas[data-drawing]')) paintCanvas(cv, round.strokes);
+}
+
+function bindBoard() {
+  const cv = document.getElementById('board');
+  let cur = null, ctx = null, w = 0;
+  const pos = (e) => {
+    const b = cv.getBoundingClientRect();
+    const f = (v) => Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000;
+    return [f((e.clientX - b.left) / b.width), f((e.clientY - b.top) / b.height)];
+  };
+  cv.addEventListener('pointerdown', (e) => {
+    if (ui.drawn || cur) return;
+    e.preventDefault();
+    try { cv.setPointerCapture(e.pointerId); } catch { /* 캔버스 밖으로 나가도 획이 끊기지 않게 하는 용도라 실패해도 무방 */ }
+    cur = { p: drawer(round.turn), pts: [pos(e)] };
+    round.strokes.push(cur);
+    ({ ctx, w } = paintCanvas(cv, round.strokes));
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!cur) return;
+    const [px, py] = cur.pts[cur.pts.length - 1];
+    const pt = pos(e);
+    cur.pts.push(pt);
+    ctx.strokeStyle = colorOf(cur.p);
+    ctx.beginPath();
+    ctx.moveTo(px * w, py * w);
+    ctx.lineTo(pt[0] * w, pt[1] * w);
+    ctx.stroke();
+  });
+  const end = () => { if (!cur) return; cur = null; ui.drawn = true; render(); };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
 }
 
 function cardBack(i) {
@@ -491,7 +615,7 @@ function cardBack(i) {
     // 바보 모드 라이어 카드는 시민 카드와 똑같이 보여야 한다
     const w = role === 'liar' ? r.decoy : r.word;
     return `<div class="face back"><div class="label">제시어</div><div class="word">${esc(w)}</div>${cat}
-      <div class="desc">라이어에게 들키지 않게 설명하세요.</div></div>`;
+      <div class="desc">${r.mode === 'draw' ? '라이어가 눈치채지 못하게 조금씩 그리세요.' : '라이어에게 들키지 않게 설명하세요.'}</div></div>`;
   }
   if (role === 'spy') {
     return `<div class="face back liar"><div class="label">당신은</div><div class="word red">스파이</div>
@@ -499,7 +623,7 @@ function cardBack(i) {
       <div class="desc">라이어는 <b style="color:var(--text)">${r.liars.map((k) => esc(r.names[k])).join(', ')}</b>.<br>시민인 척 라이어를 도와주세요. 라이어 팀이 이기면 당신도 승리!</div></div>`;
   }
   return `<div class="face back liar"><div class="label">당신은</div><div class="word red">라이어</div>${cat}
-    <div class="desc">${r.showCat ? '다른 사람의 설명을 듣고 제시어를 추리하세요.' : '주제도 몰라요. 눈치껏 버텨보세요!'}<br>들키지 않게 아는 척하세요.</div></div>`;
+    <div class="desc">${r.showCat ? `다른 사람의 ${r.mode === 'draw' ? '그림을 보고' : '설명을 듣고'} 제시어를 추리하세요.` : '주제도 몰라요. 눈치껏 버텨보세요!'}<br>${r.mode === 'draw' ? '들키지 않게 그럴듯하게 그리세요.' : '들키지 않게 아는 척하세요.'}</div></div>`;
 }
 
 function countVotes() {
@@ -580,12 +704,14 @@ const ACTIONS = {
   mode: (a) => { settings.mode = a; normalize(); saveSettings(); render(); },
   liars: (a) => { settings.liars = +a; normalize(); saveSettings(); render(); },
   cat: (a) => {
-    if (!a) settings.cats = [];
-    else settings.cats = settings.cats.includes(a) ? settings.cats.filter((c) => c !== a) : [...settings.cats, a];
+    const k = catKey();
+    if (!a) settings[k] = [];
+    else settings[k] = settings[k].includes(a) ? settings[k].filter((c) => c !== a) : [...settings[k], a];
     saveSettings(); render();
   },
   showCat: () => { settings.showCat = !settings.showCat; saveSettings(); render(); },
   timer: (a) => { settings.timer = +a; saveSettings(); render(); },
+  laps: (a) => { settings.laps = +a; saveSettings(); render(); },
   vote: (a) => { settings.vote = a; saveSettings(); render(); },
   start: () => {
     startRound();
@@ -601,7 +727,16 @@ const ACTIONS = {
     requestAnimationFrame(() => requestAnimationFrame(() => f.classList.add('on')));
   },
   'next-reveal': () => {
-    if (round.step < round.names.length - 1) { round.step++; go('reveal'); } else go('discuss');
+    if (round.step < round.names.length - 1) { round.step++; go('reveal'); } else go(round.mode === 'draw' ? 'draw' : 'discuss');
+  },
+  'draw-next': () => {
+    if (round.turn < round.names.length * round.laps - 1) { round.turn++; go('draw'); } else ACTIONS['to-vote']();
+  },
+  'draw-undo': () => {
+    if (!ui.drawn) return;
+    round.strokes.pop();
+    ui.drawn = false;
+    render();
   },
   'timer-toggle': (_, el) => {
     if (ui.running) {
@@ -675,6 +810,7 @@ window.addEventListener('popstate', () => {
   if (!confirmExit()) { history.pushState({ app: 1 }, ''); return; }
   ACTIONS.home();
 });
+window.addEventListener('resize', paintDrawings);
 window.addEventListener('beforeunload', (e) => {
   if (IN_GAME.includes(screen)) { e.preventDefault(); e.returnValue = ''; }
 });

@@ -225,6 +225,20 @@ details[open] summary::after { content: "－"; }
 .rules { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
 .rules li + li { margin-top: 2px; }
 
+/* ---------- drawing ---------- */
+.drawer { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
+.drawer .dot { width: 22px; height: 22px; border-radius: 50%; flex: none; }
+.drawer-name { margin: 0; font-size: 20px; font-weight: 700; }
+.drawer-sub { margin: 0; font-size: 14px; color: var(--muted); }
+.drawer .cat-pill { margin-left: auto; flex: none; font-size: 13px; padding: 4px 10px; border-radius: 999px; background: var(--surface); color: var(--muted); }
+/* 그림판은 다크 모드에서도 흰 종이로 둔다 (플레이어 색이 흰 바탕 기준) */
+.board { display: block; width: min(100%, 56dvh); aspect-ratio: 1; margin: 0 auto; background: #ffffff; border: 1px solid var(--line); border-radius: 16px; touch-action: none; }
+.board.thumb { width: min(72%, 34dvh); }
+.drawing { margin: 4px 0 16px; }
+.legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 12px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.legend .lg { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 50%; }
+
 /* ---------- vote ---------- */
 .lead { font-size: 22px; font-weight: 700; margin: 8px 0 4px; letter-spacing: -0.02em; }
 .sub { color: var(--muted); margin: 0 0 16px; font-size: 15px; }
