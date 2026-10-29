@@ -149,6 +149,17 @@ button:disabled { cursor: not-allowed; }
 .seg button[aria-pressed="true"] { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .seg button:disabled { opacity: .35; }
 
+.team { display: grid; gap: 6px; }
+.team-row { display: flex; align-items: center; gap: 6px; }
+.team-row .team-no { width: 18px; flex: none; text-align: center; font-size: 14px; font-weight: 700; color: var(--muted); }
+.team-row .seg { flex: 1; }
+.team-row .icon-btn { width: 36px; height: 36px; font-size: 16px; flex: none; }
+.icon-btn:disabled { opacity: .25; }
+.btn.add { width: 100%; margin-top: 8px; background: transparent; border: 1px dashed var(--line); color: var(--muted); }
+.role-help { margin: 12px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+.role-help li + li { margin-top: 3px; }
+.role-help b { color: var(--text); margin-right: 2px; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   border: 1px solid var(--line); background: var(--bg); border-radius: 999px;

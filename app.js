@@ -12,11 +12,15 @@ const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0;
 const pressed = (b) => `aria-pressed="${b}"`;
 
 /* ================= 설정·상태 ================= */
-const MODES = {
-  normal: { name: '노말', desc: '라이어는 자신이 라이어인 걸 알고, 제시어 없이 주제만 보고 시작해요.' },
-  fool: { name: '바보', desc: '라이어는 자기가 라이어인 줄 몰라요. 비슷하지만 다른 단어를 받아요.' },
-  spy: { name: '스파이', desc: '제시어와 라이어를 아는 스파이가 시민인 척 라이어를 도와요. (5명 이상)' },
-  draw: { name: '그리기', desc: '말 대신 그림으로! 폰을 돌려가며 한 사람씩 한 획만 이어 그려요. 라이어는 주제만 알아요.' },
+const GAMES = {
+  talk: { name: '말로 설명', desc: '돌아가며 한 마디씩 제시어를 설명해요.' },
+  draw: { name: '그리기', desc: '말 대신 그림으로! 폰을 돌려가며 한 사람씩 한 획만 이어 그려요.' },
+};
+// 라이어 팀의 한 자리마다 역할을 따로 고른다
+const ROLES = {
+  liar: { name: '라이어', desc: '자기가 라이어인 걸 알고, 제시어 없이 주제만 봐요.' },
+  fool: { name: '바보', desc: '자기가 라이어인 줄 몰라요. 비슷하지만 다른 단어를 받아요.' },
+  spy: { name: '스파이', desc: '제시어와 라이어 팀을 알고, 시민인 척 몰래 도와요. 라이어나 바보가 한 명은 있어야 해요.' },
 };
 const TIMERS = [0, 60, 120, 180, 300, 420];
 const LAPS = [1, 2, 3];
@@ -26,10 +30,19 @@ const DRAW_CATS = window.DRAW_WORDS;
 // 그리기 모드에서 누가 어느 획을 그렸는지 구분하는 플레이어별 색 (흰 바탕 기준)
 const COLORS = ['#222222', '#e5484d', '#2f6fde', '#1f9d55', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4',
   '#84cc16', '#f97316', '#0f766e', '#a16207', '#6366f1', '#be123c', '#64748b'];
-const DEFAULTS = { players: 5, names: [], mode: 'normal', liars: 1, cats: [], drawCats: [], showCat: true, timer: 180, laps: 2, vote: 'point' };
+const DEFAULTS = { players: 5, names: [], game: 'talk', team: ['liar'], cats: [], drawCats: [], showCat: true, timer: 180, laps: 2, vote: 'point' };
 
-let settings = { ...DEFAULTS, ...store.get('liar.settings', {}) };
+const saved = store.get('liar.settings', {});
+if (!saved.team && saved.mode) {
+  // 예전 버전은 모드 하나(normal/fool/spy/draw)와 라이어 수로 저장했다
+  saved.team = Array(saved.liars === 2 ? 2 : 1).fill(saved.mode === 'fool' ? 'fool' : 'liar');
+  if (saved.mode === 'spy') saved.team.push('spy');
+  saved.game = saved.mode === 'draw' ? 'draw' : 'talk';
+}
+let settings = { ...DEFAULTS, ...saved };
 delete settings.custom; // 예전 버전의 직접 입력 제시어
+delete settings.mode;
+delete settings.liars;
 let scores = store.get('liar.scores', {});
 const used = new Set();
 let round = null;
@@ -43,8 +56,10 @@ const saveSettings = () => store.set('liar.settings', settings);
 function normalize() {
   const s = settings;
   s.players = Math.min(MAX_P, Math.max(MIN_P, s.players | 0));
-  if (s.mode === 'spy' && s.players < 5) s.mode = 'normal';
-  if (s.liars === 2 && s.players < (s.mode === 'spy' ? 7 : 6)) s.liars = 1;
+  if (!GAMES[s.game]) s.game = 'talk';
+  s.team = s.team.filter((r) => ROLES[r]).slice(0, maxTeam());
+  if (!s.team.length) s.team = ['liar'];
+  if (s.team.every((r) => r === 'spy')) s.team[0] = 'liar';
   if (!TIMERS.includes(s.timer)) s.timer = 180;
   if (!LAPS.includes(s.laps)) s.laps = 2;
   s.cats = s.cats.filter((c) => CATS.some((x) => x.name === c));
@@ -61,8 +76,10 @@ function playerNames() {
 }
 
 // 그리기 모드는 그리기 쉬운 단어만 모은 별도 목록과 별도 주제 선택을 쓴다
-const catList = (mode = settings.mode) => (mode === 'draw' ? DRAW_CATS : CATS);
-const catKey = () => (settings.mode === 'draw' ? 'drawCats' : 'cats');
+const catList = (game = settings.game) => (game === 'draw' ? DRAW_CATS : CATS);
+const catKey = () => (settings.game === 'draw' ? 'drawCats' : 'cats');
+// 시민이 라이어 팀보다 늘 많도록: 3~4명 1자리, 5~6명 2자리, 7~8명 3자리, 9명 이상 4자리
+const maxTeam = () => Math.min(4, Math.max(1, Math.floor((settings.players - 1) / 2)));
 
 function activeCats() {
   const picked = settings[catKey()];
@@ -76,7 +93,12 @@ function pickWord() {
   if (!avail.length) { for (const x of pool) used.delete(x.cat + '|' + x.pair.join('|')); avail = pool; }
   const x = avail[rand(avail.length)];
   used.add(x.cat + '|' + x.pair.join('|'));
-  const [word, decoy] = x.pair.length > 1 && rand(2) ? [x.pair[1], x.pair[0]] : x.pair;
+  let [word, decoy] = x.pair.length > 1 && rand(2) ? [x.pair[1], x.pair[0]] : x.pair;
+  if (!decoy) {
+    // 그리기 단어는 쌍이 없으니 바보에게는 같은 주제의 다른 단어를 준다
+    const others = pool.filter((y) => y.cat === x.cat && y.pair[0] !== word);
+    decoy = others.length ? others[rand(others.length)].pair[0] : word;
+  }
   return { cat: x.cat, word, decoy };
 }
 
@@ -87,11 +109,10 @@ function startRound() {
   const names = playerNames();
   const n = names.length;
   const order = shuffle([...Array(n).keys()]);
-  const liars = order.slice(0, settings.liars);
-  const spy = settings.mode === 'spy' ? order[settings.liars] : null;
+  const team = settings.team.map((role, k) => ({ i: order[k], role }));
   round = {
-    ...pickWord(), names, liars, spy,
-    mode: settings.mode, showCat: settings.showCat,
+    ...pickWord(), names, team,
+    game: settings.game, showCat: settings.showCat,
     step: 0, first: rand(n), dir: rand(2) ? '시계 방향' : '반시계 방향',
     tie: 0, candidates: [...Array(n).keys()], ballots: [], voter: 0, accused: null,
     laps: settings.laps, turn: 0, strokes: [],
@@ -100,8 +121,11 @@ function startRound() {
   go('reveal');
 }
 
-const roleOf = (i) => (round.liars.includes(i) ? 'liar' : i === round.spy ? 'spy' : 'citizen');
+const roleOf = (i) => round.team.find((t) => t.i === i)?.role || 'citizen';
 const liarTeam = (i) => roleOf(i) !== 'citizen';
+// 라이어와 바보는 지목되면 잡힌 것, 스파이는 지목돼도 오지목이다
+const isCaught = (i) => ['liar', 'fool'].includes(roleOf(i));
+const namesWith = (role) => round.team.filter((t) => t.role === role).map((t) => esc(round.names[t.i])).join(', ');
 
 function finish(type) {
   const gains = {};
@@ -188,9 +212,10 @@ const VIEWS = {
         <li>지목된 사람이 시민(또는 스파이)이면 <b>라이어 팀 승리</b>.</li>
         <li>라이어가 지목되면 <b>마지막 기회</b>! 라이어가 제시어를 맞히면 역전승, 틀리면 시민 승리.</li>
       </ul>
-      <h3>모드</h3>
-      ${Object.values(MODES).map((m) => `<div class="mode-card"><b>${m.name}</b>${m.desc}</div>`).join('')}
-      <p class="muted" style="font-size:14px;margin-top:10px">라이어 2명은 6명 이상(스파이 모드는 7명 이상)일 때 고를 수 있어요.</p>
+      <h3>라이어 팀 역할</h3>
+      ${Object.values(ROLES).map((m) => `<div class="mode-card"><b>${m.name}</b>${m.desc}</div>`).join('')}
+      <p class="muted" style="font-size:14px;margin-top:10px">라이어 팀은 자리마다 역할을 따로 고를 수 있어요. 5명이면 2자리, 7명이면 3자리, 9명부터 4자리까지 돼요.
+        라이어나 바보가 지목되면 잡힌 거고, 스파이가 지목되면 엉뚱한 사람을 고른 거예요.</p>
       <h3>그리기 모드</h3>
       <ul>
         <li>제시어 확인은 똑같아요. 라이어는 단어 없이 주제만 알아요.</li>
@@ -211,14 +236,15 @@ const VIEWS = {
     const s = settings;
     const names = Array.from({ length: s.players }, (_, i) => `
       <input class="input" maxlength="12" placeholder="플레이어 ${i + 1}" value="${esc(s.names[i] || '')}" data-name="${i}" aria-label="${i + 1}번 이름">`).join('');
-    const liarMin = s.mode === 'spy' ? 7 : 6;
-    const citizens = s.players - s.liars - (s.mode === 'spy' ? 1 : 0);
+    const max = maxTeam();
+    const counts = Object.entries(ROLES).map(([k, r]) => [r.name, s.team.filter((x) => x === k).length])
+      .filter(([, c]) => c).map(([nm, c]) => `${nm} ${c}`).join(' · ');
     return `
     ${topbar('게임 설정')}
     <section class="screen">
       <div class="section">
         <div class="section-head"><h3 class="section-title">인원</h3>
-          <span class="section-note">시민 ${citizens} · 라이어 ${s.liars}${s.mode === 'spy' ? ' · 스파이 1' : ''}</span></div>
+          <span class="section-note">시민 ${s.players - s.team.length} · ${counts}</span></div>
         <div class="stepper">
           <button data-act="players" data-arg="-1" ${s.players <= MIN_P ? 'disabled' : ''} aria-label="한 명 빼기">−</button>
           <span class="val">${s.players}<small>명</small></span>
@@ -227,19 +253,20 @@ const VIEWS = {
       </div>
 
       <div class="section">
-        <div class="section-head"><h3 class="section-title">모드</h3></div>
-        <div class="seg">${Object.entries(MODES).map(([k, m]) =>
-          `<button data-act="mode" data-arg="${k}" ${pressed(s.mode === k)} ${k === 'spy' && s.players < 5 ? 'disabled' : ''}>${m.name}</button>`).join('')}</div>
-        <p class="hint">${MODES[s.mode].desc}</p>
+        <div class="section-head"><h3 class="section-title">게임 방식</h3></div>
+        <div class="seg">${Object.entries(GAMES).map(([k, g]) =>
+          `<button data-act="game" data-arg="${k}" ${pressed(s.game === k)}>${g.name}</button>`).join('')}</div>
+        <p class="hint">${GAMES[s.game].desc}</p>
       </div>
 
       <div class="section">
-        <div class="section-head"><h3 class="section-title">라이어 수</h3>
-          ${s.players < liarMin ? `<span class="section-note">2명은 ${liarMin}명부터</span>` : ''}</div>
-        <div class="seg">
-          <button data-act="liars" data-arg="1" ${pressed(s.liars === 1)}>1명</button>
-          <button data-act="liars" data-arg="2" ${pressed(s.liars === 2)} ${s.players < liarMin ? 'disabled' : ''}>2명</button>
-        </div>
+        <div class="section-head"><h3 class="section-title">라이어 팀</h3>
+          <span class="section-note">${s.players}명이면 최대 ${max}명</span></div>
+        <div class="team">${s.team.map(teamRow).join('')}</div>
+        ${s.team.length < max
+          ? '<button class="btn small add" data-act="team-add">＋ 라이어 팀 한 명 더</button>'
+          : `<p class="hint">${max < 4 ? '인원을 늘리면 라이어 팀을 더 넣을 수 있어요.' : '라이어 팀은 4명까지예요.'}</p>`}
+        <ul class="role-help">${Object.values(ROLES).map((r) => `<li><b>${r.name}</b> ${r.desc}</li>`).join('')}</ul>
       </div>
 
       <div class="section">
@@ -255,7 +282,7 @@ const VIEWS = {
         </div>
       </div>
 
-      ${s.mode === 'draw' ? `
+      ${s.game === 'draw' ? `
       <div class="section">
         <div class="section-head"><h3 class="section-title">그리기 바퀴</h3>
           <span class="section-note">한 사람당 ${s.laps}획</span></div>
@@ -308,7 +335,7 @@ const VIEWS = {
       </button>
       <div class="grow"></div>
       <div class="sticky-actions">
-        <button class="btn primary" data-act="next-reveal" ${shown ? '' : 'disabled'}>${last ? `모두 확인 완료 · ${r.mode === 'draw' ? '그리기' : '설명'} 시작` : '확인했어요 · 다음 사람에게'}</button>
+        <button class="btn primary" data-act="next-reveal" ${shown ? '' : 'disabled'}>${last ? `모두 확인 완료 · ${r.game === 'draw' ? '그리기' : '설명'} 시작` : '확인했어요 · 다음 사람에게'}</button>
       </div>
     </section>`;
   },
@@ -377,7 +404,7 @@ const VIEWS = {
     <section class="screen">
       <p class="lead">${r.tie ? '동점자 중에서 다시 지목!' : '하나, 둘, 셋!'}</p>
       <p class="sub">${r.tie ? '동점자만 후보로, 모두 다시 동시에 가리키세요.' : '다 같이 라이어라고 생각하는 사람을 동시에 가리키세요.'}<br>가장 많이 지목된 사람을 고르세요.</p>
-      ${r.mode === 'draw' ? drawingHtml() : ''}
+      ${r.game === 'draw' ? drawingHtml() : ''}
       <div class="pick">${r.names.map((nm, i) => `<button data-act="sel" data-arg="${i}" ${pressed(ui.sel === i)}>${esc(nm)}</button>`).join('')}</div>
       <div class="grow"></div>
       <div class="sticky-actions">
@@ -408,7 +435,7 @@ const VIEWS = {
     <section class="screen">
       <p class="lead">${esc(r.names[v])}님, 누가 라이어 같나요?</p>
       <p class="sub">고른 뒤 확정하면 화면이 가려져요.</p>
-      ${r.mode === 'draw' ? drawingHtml() : ''}
+      ${r.game === 'draw' ? drawingHtml() : ''}
       <div class="pick">${cands.map((i) => `<button data-act="sel" data-arg="${i}" ${pressed(ui.sel === i)}>${esc(r.names[i])}</button>`).join('')}</div>
       <div class="grow"></div>
       <div class="sticky-actions">
@@ -452,23 +479,23 @@ const VIEWS = {
         <p class="sub" style="margin:0">가장 많이 지목된 사람</p>
         <p class="big-name">${esc(r.names[i])}</p>
         <p class="sub">과연 라이어일까요?</p>`;
-    } else if (role !== 'liar') {
+    } else if (!isCaught(i)) {
       body = `
         <p class="big-name">${esc(r.names[i])}</p>
         <p class="verdict red pop">${role === 'spy' ? '스파이였어요!' : '시민이었어요!'}</p>
-        <p class="sub">엉뚱한 사람을 지목했어요. 라이어 팀 승리!</p>`;
+        <p class="sub">${role === 'spy' ? '스파이는 잡아도 소용없어요. ' : ''}엉뚱한 사람을 지목했어요. 라이어 팀 승리!</p>`;
     } else {
       body = `
         <p class="big-name">${esc(r.names[i])}</p>
-        <p class="verdict ok pop">라이어가 맞아요!</p>
-        <p class="sub">${r.mode === 'fool' ? '자기가 라이어인 줄 몰랐겠죠? ' : ''}마지막 기회! 라이어는 시민의 제시어를 말해보세요.</p>
+        <p class="verdict ok pop">${role === 'fool' ? '바보 라이어였어요!' : '라이어가 맞아요!'}</p>
+        <p class="sub">${role === 'fool' ? `자기가 라이어인 줄 몰랐겠죠? (받은 단어: ${esc(r.decoy)}) ` : ''}마지막 기회! 시민의 제시어를 말해보세요.</p>
         ${stage === 'answer' ? `
           <div class="answer pop"><div class="label">시민 제시어</div><div class="word">${esc(r.word)}</div></div>
           <p class="sub" style="margin-top:12px">라이어가 맞혔나요?</p>` : ''}`;
     }
     let btns;
     if (stage === 'wait') btns = '<button class="btn danger" data-act="unmask">정체 공개</button>';
-    else if (role !== 'liar') btns = '<button class="btn primary" data-act="finish" data-arg="miss">결과 보기</button>';
+    else if (!isCaught(i)) btns = '<button class="btn primary" data-act="finish" data-arg="miss">결과 보기</button>';
     else if (stage === 'caught') btns = '<button class="btn primary" data-act="show-answer">라이어가 답했어요 · 정답 공개</button>';
     else btns = `<div class="actions row" style="padding:0">
         <button class="btn" data-act="finish" data-arg="citizen">틀렸어요</button>
@@ -489,7 +516,8 @@ const VIEWS = {
       tie: '재투표에서도 동점이 나왔어요.',
       guess: '잡혔지만 제시어를 맞혀 역전했어요!',
     }[type];
-    const liarNames = r.liars.map((i) => esc(r.names[i])).join(', ');
+    const teamRows = Object.entries(ROLES).map(([k, ro]) => [ro.name, namesWith(k)]).filter(([, nm]) => nm)
+      .map(([k, nm]) => `<div class="row"><span class="k">${k}</span><span class="v">${nm}</span></div>`).join('');
     const board = [...r.names].sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
     return `
     ${topbar('결과', 'none')}
@@ -500,17 +528,16 @@ const VIEWS = {
       </div>
       <div class="summary">
         <div class="row"><span class="k">제시어</span><span class="v">${esc(r.word)}</span></div>
-        ${r.mode === 'fool' ? `<div class="row"><span class="k">라이어 단어</span><span class="v">${esc(r.decoy)}</span></div>` : ''}
+        ${namesWith('fool') ? `<div class="row"><span class="k">바보가 받은 단어</span><span class="v">${esc(r.decoy)}</span></div>` : ''}
         <div class="row"><span class="k">주제</span><span class="v">${esc(catLabel(r.cat))}</span></div>
-        <div class="row"><span class="k">라이어</span><span class="v">${liarNames}</span></div>
-        ${r.spy != null ? `<div class="row"><span class="k">스파이</span><span class="v">${esc(r.names[r.spy])}</span></div>` : ''}
+        ${teamRows}
       </div>
-      ${r.mode === 'draw' ? `<div style="margin-top:16px">${drawingHtml()}</div>` : ''}
+      ${r.game === 'draw' ? `<div style="margin-top:16px">${drawingHtml()}</div>` : ''}
       <div class="board">
         <h3>누적 점수 <button class="btn small ghost" data-act="reset-scores" style="min-height:32px">초기화</button></h3>
         ${board.map((nm, k) => {
           const i = r.names.indexOf(nm);
-          const tag = roleOf(i) === 'liar' ? '<span class="tag">라이어</span>' : roleOf(i) === 'spy' ? '<span class="tag">스파이</span>' : '';
+          const tag = liarTeam(i) ? `<span class="tag">${ROLES[roleOf(i)].name}</span>` : '';
           return `<div class="row"><span class="rank">${k + 1}</span><span class="nm">${esc(nm)} ${tag}</span>
             ${gains[nm] ? `<span class="gain ${liarWin ? '' : 'ok'}">+${gains[nm]}</span>` : ''}<span class="pts">${scores[nm] || 0}</span></div>`;
         }).join('')}
@@ -527,6 +554,18 @@ const VIEWS = {
   },
 };
 
+function teamRow(role, k) {
+  const team = settings.team;
+  // 남은 라이어·바보가 이 자리 하나뿐이면 스파이로 바꿀 수 없다
+  const lastReal = role !== 'spy' && team.filter((r) => r !== 'spy').length === 1;
+  return `<div class="team-row">
+    <span class="team-no">${k + 1}</span>
+    <div class="seg">${Object.entries(ROLES).map(([key, r]) =>
+      `<button data-act="team-role" data-arg="${k}:${key}" ${pressed(role === key)} ${key === 'spy' && lastReal ? 'disabled' : ''}>${r.name}</button>`).join('')}</div>
+    <button class="icon-btn" data-act="team-del" data-arg="${k}" ${team.length > 1 ? '' : 'disabled'} aria-label="${k + 1}번 자리 빼기">✕</button>
+  </div>`;
+}
+
 function chipsHtml() {
   const picked = settings[catKey()];
   return `<button class="chip" data-act="cat" data-arg="" ${pressed(!picked.length)}>🎲 전체</button>
@@ -534,7 +573,7 @@ function chipsHtml() {
 }
 
 function catLabel(name) {
-  const c = catList(round?.mode).find((x) => x.name === name);
+  const c = catList(round?.game).find((x) => x.name === name);
   return c ? `${c.emoji} ${c.name}` : name;
 }
 
@@ -611,19 +650,19 @@ function cardBack(i) {
   const r = round;
   const role = roleOf(i);
   const cat = r.showCat ? `<span class="cat">${esc(catLabel(r.cat))}</span>` : '';
-  if (role === 'citizen' || (role === 'liar' && r.mode === 'fool')) {
-    // 바보 모드 라이어 카드는 시민 카드와 똑같이 보여야 한다
-    const w = role === 'liar' ? r.decoy : r.word;
+  if (role === 'citizen' || role === 'fool') {
+    // 바보 카드는 시민 카드와 똑같이 보여야 한다
+    const w = role === 'fool' ? r.decoy : r.word;
     return `<div class="face back"><div class="label">제시어</div><div class="word">${esc(w)}</div>${cat}
-      <div class="desc">${r.mode === 'draw' ? '라이어가 눈치채지 못하게 조금씩 그리세요.' : '라이어에게 들키지 않게 설명하세요.'}</div></div>`;
+      <div class="desc">${r.game === 'draw' ? '라이어가 눈치채지 못하게 조금씩 그리세요.' : '라이어에게 들키지 않게 설명하세요.'}</div></div>`;
   }
   if (role === 'spy') {
     return `<div class="face back liar"><div class="label">당신은</div><div class="word red">스파이</div>
       <div class="label" style="margin-top:8px">제시어 <b style="color:var(--text)">${esc(r.word)}</b></div>${cat}
-      <div class="desc">라이어는 <b style="color:var(--text)">${r.liars.map((k) => esc(r.names[k])).join(', ')}</b>.<br>시민인 척 라이어를 도와주세요. 라이어 팀이 이기면 당신도 승리!</div></div>`;
+      <div class="desc">${namesWith('liar') ? `라이어: <b style="color:var(--text)">${namesWith('liar')}</b><br>` : ''}${namesWith('fool') ? `바보: <b style="color:var(--text)">${namesWith('fool')}</b> (본인은 몰라요)<br>` : ''}시민인 척 라이어 팀을 도와주세요. 라이어 팀이 이기면 당신도 승리!</div></div>`;
   }
   return `<div class="face back liar"><div class="label">당신은</div><div class="word red">라이어</div>${cat}
-    <div class="desc">${r.showCat ? `다른 사람의 ${r.mode === 'draw' ? '그림을 보고' : '설명을 듣고'} 제시어를 추리하세요.` : '주제도 몰라요. 눈치껏 버텨보세요!'}<br>${r.mode === 'draw' ? '들키지 않게 그럴듯하게 그리세요.' : '들키지 않게 아는 척하세요.'}</div></div>`;
+    <div class="desc">${r.showCat ? `다른 사람의 ${r.game === 'draw' ? '그림을 보고' : '설명을 듣고'} 제시어를 추리하세요.` : '주제도 몰라요. 눈치껏 버텨보세요!'}<br>${r.game === 'draw' ? '들키지 않게 그럴듯하게 그리세요.' : '들키지 않게 아는 척하세요.'}</div></div>`;
 }
 
 function countVotes() {
@@ -701,8 +740,14 @@ const ACTIONS = {
   home: () => { releaseWake(); round = null; go('home'); },
   exit: () => { if (confirmExit()) ACTIONS.home(); },
   players: (a) => { settings.players += +a; normalize(); saveSettings(); render(); },
-  mode: (a) => { settings.mode = a; normalize(); saveSettings(); render(); },
-  liars: (a) => { settings.liars = +a; normalize(); saveSettings(); render(); },
+  game: (a) => { settings.game = a; normalize(); saveSettings(); render(); },
+  'team-add': () => { settings.team = [...settings.team, 'liar']; normalize(); saveSettings(); render(); },
+  'team-del': (a) => { settings.team = settings.team.filter((_, k) => k !== +a); normalize(); saveSettings(); render(); },
+  'team-role': (a) => {
+    const [k, role] = a.split(':');
+    settings.team = settings.team.map((r, j) => (j === +k ? role : r));
+    normalize(); saveSettings(); render();
+  },
   cat: (a) => {
     const k = catKey();
     if (!a) settings[k] = [];
@@ -727,7 +772,7 @@ const ACTIONS = {
     requestAnimationFrame(() => requestAnimationFrame(() => f.classList.add('on')));
   },
   'next-reveal': () => {
-    if (round.step < round.names.length - 1) { round.step++; go('reveal'); } else go(round.mode === 'draw' ? 'draw' : 'discuss');
+    if (round.step < round.names.length - 1) { round.step++; go('reveal'); } else go(round.game === 'draw' ? 'draw' : 'discuss');
   },
   'draw-next': () => {
     if (round.turn < round.names.length * round.laps - 1) { round.turn++; go('draw'); } else ACTIONS['to-vote']();
@@ -777,7 +822,7 @@ const ACTIONS = {
     go('secret');
   },
   'accuse-top': () => { round.accused = countVotes().top[0]; go('accuse'); },
-  unmask: () => { ui.stage = roleOf(round.accused) === 'liar' ? 'caught' : 'innocent'; render(); },
+  unmask: () => { ui.stage = isCaught(round.accused) ? 'caught' : 'innocent'; render(); },
   'show-answer': () => { ui.stage = 'answer'; render(); },
   finish: (a) => finish(a),
   'reset-scores': () => {
